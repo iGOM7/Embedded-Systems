@@ -1,0 +1,1103 @@
+/**
+ * main.c
+ */
+#include "msp.h"
+#include "msp432p401r.h"
+#include "core_cm4.h"
+#include "adc.h"
+#include "adc_circbuf.h"
+#include "Lab4.h"
+#include <string.h>
+#include <stdint.h>
+#include <stdlib.h>
+
+#define SCB_SCR_ENABLE_SLEEPONEXIT (0x00000002)
+
+CircBuf_t init;
+CircBuf_t * rxBuff = &init;
+CircBuf_t out;
+CircBuf_t * txBuff = &out;
+
+volatile CB_Status status;
+volatile uint16_t input;
+
+extern volatile float Celsius;
+extern volatile float Fahrenheit;
+extern volatile float Kelvin;
+extern volatile float Voltage;
+extern volatile float NADC;
+volatile uint8_t counter = 0;
+volatile uint8_t test = 0;
+volatile uint8_t isRightButton = 0;
+volatile uint8_t isLeftButton = 0;
+
+
+
+void main(void)
+{
+    WDT_A->CTL = WDT_A_CTL_PW | WDT_A_CTL_HOLD;     // stop watchdog timer
+
+    /* Other microcontroller configuration code here... */
+    configure_ADC();     // configure the ADC for interrupts
+    UART_Configure();       // configures the UART
+    GPIO_configure();
+    timer_a0_config();
+    __enable_interrupt();
+    SCB->SCR &= ~SCB_SCR_ENABLE_SLEEPONEXIT;    // wake up on exit from ISR
+    __enable_irq();
+
+    SysTick->LOAD = 0x00FFFFFF;
+    SysTick->CTRL = BIT2 | BIT0;
+
+
+    status = CB_initialize_buffer(&rxBuff, 60);    // see if the rx and tx buffers were created correctly
+    status = CB_initialize_buffer(&txBuff, 60);     // size 60, if not, CB_initialize_buffer does it for us
+
+    while(1) {
+        //ADC14->CTL0 |= ADC14_CTL0_SC;   // sampling and conversion start
+        //__sleep();           // blocks here until conversion finishes
+        //__no_operation();    // NO-operation, good for a breakpoint
+        //Voltage = ConvertNadcToVoltage(NADC, RESOLUTION_14_BITS, vREFERENCE_3_3V);
+
+        // LED on to indicate if buffer is full
+        if(CB_buffer_full(txBuff) == CB_FULL){
+            P1->OUT ^= BIT0;}
+        if(CB_buffer_empty(txBuff) != 0){
+            P1->OUT &= ~BIT0;}
+
+        // once left button is pressed, sets while loop over and over
+        if(isLeftButton){
+            isLeftButton = 0;
+            isRightButton = 0;
+            TIMER_A0->CTL |= TIMER_A_CTL_MC__UP;    //turns timer on once flag is called
+            while(CB_buffer_full(txBuff) != CB_FULL){     // for 60 seconds, run this loop
+                Celsius = ConvertToCelsius(NADC);  // set temperature value, used in printCharStats() later
+                Fahrenheit = ConvertToFahrenheit(NADC);
+                Kelvin = ConvertToKelvin(NADC);
+                CB_add_item_to_buffer(txBuff, NADC);   // add data to the transmit buffer
+                printCharStats();
+                test = 2;
+            }
+            EUSCI_A0->IE |= EUSCI_A_IE_RXIE;    // enable receive interrupts
+
+            TIMER_A0->R = 0;         // Reset count
+            TIMER_A0->CCTL[0] = TIMER_A_CCTLN_CCIE;   // TACCR0 interrupt enabled
+        }
+
+        // once right button is pressed
+        if(isRightButton){
+            isRightButton = 0;
+            isLeftButton = 0;   // takes care of random button presses during earlier print
+            CB_dump_buffer(txBuff);
+            P1->OUT &= ~BIT0;
+            while(CB_buffer_full(txBuff) != CB_FULL){   // refill buffer where it left off
+                CB_add_item_to_buffer(txBuff, NADC);
+                EUSCI_A0->IE |= EUSCI_A_IE_RXIE;
+                //P1->OUT ^= BIT0;
+            }
+
+            isRightButton = 0;
+            isLeftButton = 0;
+
+            EUSCI_A0->IE |= EUSCI_A_IE_RXIE;    //enable receive interrupts
+            }
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*
+ * lab4.c
+ *
+ *  Created on: Oct 12, 2017
+ *      Author: Woojae Jang
+ *
+ *      Any general Lab 4 code
+ */
+#include "msp.h"
+#include "lab4.h"
+#include "adc_circbuf.h"
+#include "adc.h"
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <math.h>
+
+extern CircBuf_t * rxBuff;
+extern CircBuf_t * txBuff;
+
+
+extern volatile float Celsius;
+extern volatile float Fahrenheit;
+extern volatile float Kelvin;
+extern volatile float NADC;
+extern volatile uint8_t isRightButton;
+extern volatile uint8_t isLeftButton;
+extern volatile uint8_t counter;
+extern volatile uint8_t test;
+
+
+uint8_t itoa(uint32_t num, char * str, uint16_t length, uint16_t base) {
+    *(str+length) = (num % base) + ASCII_ZERO;//48 is "0" is ASCII
+    *(str + length+1) = '\0';    //terminate string
+    int i, j;
+    for(i = length-1; i >= 0; i--)
+    {
+        num = num / base;
+        if (num == 0) {    //shift string
+                for (j = i+1; *(str+j) != '\0'; j++){
+                    *(str + (j-i-1)) = *(str + j);
+                }
+                *(str+j) = '\0';  //terminate new string
+                return (length-i);
+        }
+        *(str+ i) = (num % base) + ASCII_ZERO;
+    }
+    return  (length-i);
+}
+
+void reverseftoa(char *str, int len)
+{
+    int i=0, j=len-1, temp;
+    while (i<j)
+    {
+        temp = str[i];
+        str[i] = str[j];
+        str[j] = temp;
+        i++; j--;
+    }
+}
+
+//converts given int to string str[]
+uint16_t intToStr(uint32_t x, char *str, uint16_t d){
+    uint16_t i = 0;
+    while(x){
+        str[i++] = (x%10) + '0';
+        x = x/10;
+
+    }
+    while(i < d){
+        str[i++] = '0';
+    }
+    reverseftoa(str,i);
+    str[i] = '\0';
+    return i;
+}
+
+// Converts a floating point number to string.
+void ftoa(float n, char *res, int afterpoint)
+{
+    // Extract integer part
+    int ipart = (int)n;
+    // Extract floating part
+    float fpart = n - (float)ipart;
+    // convert integer part to string
+    int i = intToStr(ipart, res, 0);
+    // check for display option after point
+    if (afterpoint != 0)
+    {
+        res[i] = '.';  // add dot
+        // Get the value of fraction part upto given no.
+        // of points after dot. The third parameter is needed
+        // to handle cases like 233.007
+        fpart = fpart * pow(10, afterpoint);
+        intToStr((int)fpart, res + i + 1, afterpoint);
+    }
+}
+
+void printCharStats(void){
+    char str[7];        //leave 7 spaces available for temperature, 3 decimal, 1 dot, 3 int
+
+    UART_send_n("\n", 1);
+
+    UART_send_n("Celsius: ", 9);
+    ftoa(Celsius, str, 3);          // 3 = afterpoint (number of values after decimal)
+    UART_send_n((uint8_t *) str, 6);
+    UART_send_byte('\n');
+
+    UART_send_n("Fahrenheit: ", 12);
+    ftoa(Fahrenheit, str, 3);
+    UART_send_n((uint8_t *) str, 6);
+    UART_send_byte('\n');
+
+    UART_send_n("Kelvin: ", 8);
+    ftoa(Kelvin, str, 3);
+    UART_send_n((uint8_t *) str, 7);
+    UART_send_n("\n\n", 2);
+}
+
+void TA0_0_IRQHandler(){    // this is currently set up to blink at 5Hz
+    if(TIMER_A0->CCTL[0] & TIMER_A_CCTLN_CCIFG){
+        TIMER_A0->CCTL[0] &= ~(TIMER_A_CCTLN_CCIFG);
+        P2->OUT++;
+        counter++;
+
+        if(counter % 5 == 0){
+            CB_add_item_to_buffer(rxBuff, NADC);
+
+            TIMER_A0->CCTL[0] &= ~(TIMER_A_CCTLN_CCIFG);
+            TIMER_A0->CCTL[0] &= ~(TIMER_A_CCTLN_CCIE);
+
+        }
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*
+ * lab4.h
+ *
+ *  Created on: Oct 12, 2017
+ *      Author: Woojae Jang
+ *
+ *      Any general Lab 4 code
+ */
+
+#ifndef LAB4_H_
+#define LAB4_H_
+
+#include <stdint.h>
+#include "adc_circbuf.h"
+/*-------------------------------------------------------
+ *              Macro Constants
+ *-----------------------------------------------------*/
+
+#define RESOLUTION_8_BITS (256)
+#define RESOLUTION_10_BITS (1024)
+#define RESOLUTION_12_BITS (4096)
+#define RESOLUTION_14_BITS (16384)
+
+#define NADC_MAX_8_BIT_RES (RESOLUTION_8_BITS - 1)
+#define NADC_MAX_10_BIT_RES (RESOLUTION_10_BITS - 1)
+#define NADC_MAX_12_BIT_RES (RESOLUTION_12_BITS - 1)
+#define NADC_MAX_14_BIT_RES (RESOLUTION_14_BITS - 1)
+
+#define vREFERENCE_MAX vREFERENCE_3_3V
+#define vREFERENCE_3_3V (3.3)
+#define vREFERENCE_1_2V (1.2)
+
+#define ASCII_ZERO 48
+
+/*-------------------------------------------------------
+ *              Function Prototypes
+ *------------------------------------------------------*/
+
+
+
+// 8 bit integer to ASCII value string
+uint8_t itoa(uint32_t num, char * str, uint16_t length, uint16_t base);
+
+// used in ftoa function to order characters
+void reverseftoa(char *str, int len);
+
+// used in ftoa changing integer to a string
+uint16_t intToStr(uint32_t x, char *str, uint16_t d);
+
+// changes float n to some ASCII string
+void ftoa(float n, char *res, int afterpoint);
+
+// organizes and sends the Celsius, Fahrenheit, and Kelvin degrees and sends them to the terminal
+void printCharStats(void);
+
+void TA0_0_IRQHandler();
+
+
+#endif /* LAB4_H_ */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*
+ * adc.c
+ *
+ *  Created on: Oct 12, 2017
+ *      Author: Woojae Jang
+ *
+ *      All UART code
+ */
+#include "msp.h"
+#include "msp432p401r.h"
+#include "core_cm4.h"
+#include "adc.h"
+#include "adc_circbuf.h"
+
+
+#define SCB_SCR_ENABLE_SLEEPONEXIT (0x00000002)
+
+
+extern CircBuf_t * rxBuff;
+extern CircBuf_t * txBuff;
+extern volatile CB_Status status;
+extern volatile uint8_t isRightButton;
+extern volatile uint8_t isLeftButton;
+float NADC = 0.0;
+float VADC = 0.0;
+float Celsius;
+float Fahrenheit;
+float Kelvin;
+float Vres;
+//float Voltage;
+
+
+
+void EUSCIA0_IRQHandler() {
+    if(EUSCI_A0->IFG & EUSCI_A_IFG_RXIFG){  //handles RX interrupts
+        //CB_add_item_to_buffer(rxBuff, EUSCI_A0->RXBUF);   //echo
+        //EUSCI_A0->TXBUF = EUSCI_A0->RXBUF;    //echo
+        if(EUSCI_A0->RXBUF == 0x0A || status == CB_FULL){
+            EUSCI_A0->IE &= ~EUSCI_A_IE_RXIE;   //turn off receive interrupts
+        }
+        else{
+            status = CB_add_item_to_buffer(rxBuff, EUSCI_A0->RXBUF);
+        }
+        P1->OUT ^= BIT0;    //led test
+        //EUSCI_A0->TXBUF = EUSCI_A0->RXBUF;  //echo
+    }
+    EUSCI_A0->IFG = 0;
+}
+
+void UART_Configure(){
+    P1->SEL0 |= (BIT2 | BIT3);                //TX & Rx Primary mode
+    P1->SEL1 &= ~(BIT2 | BIT3);
+
+// Select Frame parameters and clock source
+    EUSCI_A0->CTLW0 |= EUSCI_A_CTLW0_SWRST;                   // Put eUSCI in reset
+    EUSCI_A0->CTLW0 &= ~EUSCI_A_CTLW0_PEN;       //parity disabled
+    EUSCI_A0->CTLW0 &= ~EUSCI_A_CTLW0_MODE_3;     // set to uart mode
+    EUSCI_A0->CTLW0 &= ~EUSCI_A_CTLW0_MSB;       //LSB first
+    EUSCI_A0->CTLW0 &= ~EUSCI_A_CTLW0_SEVENBIT;  //8 bit character length
+    EUSCI_A0->CTLW0 &= ~EUSCI_A_CTLW0_SPB;       //one stop bit one start bit is default
+    EUSCI_A0->CTLW0 |= EUSCI_A_CTLW0_SSEL__SMCLK;
+    config_baud(BAUD9600);
+
+    EUSCI_A0->CTLW0 &= ~EUSCI_A_CTLW0_SWRST;      // Initialize eUSCI
+
+    EUSCI_A0->IE |= EUSCI_A_IE_RXIE;
+    EUSCI_A0->IE |= EUSCI_A_IE_TXIE;
+
+    NVIC_EnableIRQ(EUSCIA0_IRQn);
+}
+
+void GPIO_configure(void) {
+
+  P1->SEL0 &= ~(BIT1 | BIT4 | BIT7);  // P1.0 to general IOmode
+  P1->SEL1 &= ~(BIT1 | BIT4 | BIT7);
+  P1->DIR &= ~(BIT1 | BIT4);  // P1.1 set as input direction
+  P1->DIR |= (BIT7);   //P1.7 pin set as output direction
+  P1->REN |= (BIT1 | BIT4);
+  P1->OUT |= (BIT1 | BIT4);
+  P1->OUT |= (BIT0 | BIT7);  // P1.0 output low
+  P1->IFG = 0;
+  P1->IES |= (BIT1 | BIT4);   // flag is set on a high to low transition
+  P1->IE |= (BIT1 | BIT4);   // The interrupt is enable
+
+  /*Right LED configure*/
+  P2->SEL0 &= ~(BIT0 | BIT1 | BIT2);
+  P2->SEL1 &= ~(BIT0 | BIT1 | BIT2);
+  P2->DIR |= (BIT0 | BIT1 | BIT2);
+  P2->OUT &= ~(BIT0 | BIT1 | BIT2);
+
+  /*Left LED configure*/
+  P1->SEL0 &= ~(BIT0);
+  P1->SEL1 &= ~(BIT0);
+  P1->DIR |= BIT0;
+  P1->OUT &= ~(BIT0);
+
+  NVIC_EnableIRQ(PORT1_IRQn);
+}
+
+void timer_a0_config(){
+    TIMER_A0->R = 0;         // Reset count
+    //TIMER_A0->CTL = TIMER_A_CTL_MC__STOP | TIMER_A_CTL_TASSEL_2 | TIMER_A_CTL_ID_3 | TIMER_A_CTL_IE;       // SMCLK, Up mode
+    TIMER_A0->CTL = TIMER_A_CTL_MC__STOP | TIMER_A_CTL_TASSEL_2 | TIMER_A_CTL_ID_3 | TIMER_A_CTL_IE;       // testing
+    //TIMER_A0->CCR[0] = 37747;    // Value to count to
+    TIMER_A0->EX0 = TIMER_A_EX0_TAIDEX_7;
+    TIMER_A0->CCR[0] = 46875;    // testing
+    //CCR[0] = 37747 and ID_3 get 5Hz
+    TIMER_A0->CCR[0] &= ~(CCIFG);
+    TIMER_A0->CCTL[0] = TIMER_A_CCTLN_CCIE;   // TACCR0 interrupt enabled
+/* Enable Interrupts in the NVIC */
+    NVIC_EnableIRQ(TA0_0_IRQn);
+}
+
+void config_baud(BAUD baud){
+    if(baud == BAUD9600){
+        EUSCI_A0->BRW = 19;
+        EUSCI_A0->MCTLW |= EUSCI_A_MCTLW_OS16;
+        EUSCI_A0->MCTLW |= (0xAA << EUSCI_A_MCTLW_BRS_OFS);
+        EUSCI_A0->MCTLW |= (8 << EUSCI_A_MCTLW_BRF_OFS);
+    }
+}
+
+
+void UART_send_byte(uint8_t data) {
+    while(EUSCI_A0->STATW & EUSCI_A_STATW_BUSY);
+    EUSCI_A0->TXBUF = data;
+}
+
+void UART_send_n(uint8_t * data, uint32_t length) {
+    uint32_t i;
+    for (i = 0; i< length; i++) {
+        UART_send_byte(data[i]);
+    }
+}
+
+void configure_ADC() {
+    //initialize the shared reference module
+    while(REF_A->CTL0 & REF_A_CTL0_GENBUSY);    // If ref generator busy, WAIT
+    REF_A->CTL0 = REF_A_CTL0_VSEL_0 | REF_A_CTL0_ON;  //Enable internal 1.2v ref
+    REF_A->CTL0 &= ~REF_A_CTL0_TCOFF;         //Turn on temperature sensor
+
+    ADC14->CTL0 &= ~ADC14_CTL0_ENC;             //disable ADC
+
+    ADC14->CTL0 |= ADC14_CTL0_SHT0_5 | ADC14_CTL0_ON | ADC14_CTL0_SHP;
+    ADC14->CTL1 |=  ADC14_CTL1_TCMAP | ADC14_CTL1_RES__14BIT;            // Configure internal temperature sensor channel, set resolution
+    ADC14->MCTL[0] = ADC14_MCTLN_INCH_22 | ADC14_MCTLN_VRSEL_1;     // Map temperature analog channel to MEM0 /MCTL0, set 3.3V ref
+    ADC14->IER0 |= ADC14_IER0_IE0;      // Enable MCTL0/MEM0 interrupts
+
+    while(!(REF_A->CTL0 & REF_A_CTL0_GENRDY));   // wait for ref generator to settle
+    ADC14->CTL0 |=  ADC14_CTL0_ENC;        // Enable Conversions
+    NVIC_EnableIRQ(ADC14_IRQn);      // Enable ADC interrupts in NVIC module
+}
+
+void ADC14_IRQHandler(){
+        if(ADC14->IFGR0 & ADC14_IFGR0_IFG0){
+        NADC = (float) ADC14->MEM[0];
+    }
+}
+
+uint16_t getNADC() {
+    ADC14->CTL0 |= ADC14_CTL0_SC;
+    __sleep();
+    return NADC;
+}
+
+float getVADC() {
+    VADC = ( (double)getNADC()*1200 / (1<<14) );
+    return VADC;
+}
+
+void PORT1_IRQHandler(void) {
+    if(P1->IFG & BIT4) {          //right
+        EUSCI_A0->IE &= ~EUSCI_A_IE_RXIE;
+        isRightButton = 1;
+    }
+    if(P1->IFG & BIT1) {          //left
+        EUSCI_A0->IE &= ~EUSCI_A_IE_RXIE;
+        isLeftButton = 1;
+    }
+    P1->IFG = 0;
+}
+
+float ConvertToCelsius(uint16_t NADC)
+{
+    Celsius = ( (getVADC()-685) / 1.9);
+    return Celsius;
+}
+
+float ConvertToFahrenheit(uint16_t NADC)
+{
+    Fahrenheit = (ConvertToCelsius(NADC)* 9 / 5) + 32;
+    return Fahrenheit;
+}
+
+float ConvertToKelvin(uint16_t nadc)
+{
+
+    Kelvin = (ConvertToFahrenheit(NADC) + 459.67) *5/9;
+    return Kelvin;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*
+ * adc.h
+ *
+ *  Created on: Oct 12, 2017
+ *      Author: Woojae Jang
+ *
+ *      All UART code
+ */
+
+#ifndef ADC_H_
+#define ADC_H_
+
+#include <stdint.h>
+#include "msp432p401r.h"
+#include "msp.h"
+/*-------------------------------------------------------
+ *              Macro Constants
+ *-----------------------------------------------------*/
+
+#define RESOLUTION_8_BITS (256)
+#define RESOLUTION_10_BITS (1024)
+#define RESOLUTION_12_BITS (4096)
+#define RESOLUTION_14_BITS (16384)
+
+#define NADC_MAX_8_BIT_RES (RESOLUTION_8_BITS - 1)
+#define NADC_MAX_10_BIT_RES (RESOLUTION_10_BITS - 1)
+#define NADC_MAX_12_BIT_RES (RESOLUTION_12_BITS - 1)
+#define NADC_MAX_14_BIT_RES (RESOLUTION_14_BITS - 1)
+
+#define vREFERENCE_MAX vREFERENCE_3_3V
+#define vREFERENCE_3_3V (3.3)
+#define vREFERENCE_1_2V (1.2)
+
+
+/*-------------------------------------------------------
+ *              Function Prototypes
+ *------------------------------------------------------*/
+
+typedef enum BAUD_t{
+    BAUD9600,
+    //BAUD57600,
+    //BAUD115200,
+}BAUD;
+
+// configures the baud to 9600
+void config_baud(BAUD baud);
+
+// configure uart for Tx and Rx buffers
+void UART_Configure();
+
+// configure button presses
+void GPIO_configure(void);
+
+// turns on interrupts for Rx
+void EUSCIA0_IRQHandler();
+
+// timer configuration one data per second, 60 seconds total
+void timer_a0_config();
+
+// sends a byte, 8 bits of data
+void UART_send_byte(uint8_t data);
+
+// sends a bunch of bytes, also 8 bits of data
+void UART_send_n(uint8_t * data, uint32_t length);
+
+// all ADC configuration options, should be 100%
+void configure_ADC();
+
+// read ADC information from the MEM[0] register
+void ADC14_IRQHandler();
+
+// button configuration for buffer dump
+void PORT1_IRQHandler(void);
+
+//
+uint16_t getNADC();
+
+//
+float getVADC();
+
+// Use resolution, vref, and nadc to get an equivalent voltage
+float ConvertNadcToVoltage(uint16_t nadc, uint16_t resolution, float vref);
+
+// Convert the voltage to Celsius
+float ConvertToCelsius(uint16_t NADC);
+
+// Convert the Celsius to Fahrenheit
+float ConvertToFahrenheit(uint16_t NADC);
+
+// Convert the Celsius to Kelvin
+float ConvertToKelvin(uint16_t nadc);
+
+
+
+#endif /* ADC_H_ */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*
+ * adc_circbuf.c
+ *
+ *  Created on: Oct 12, 2017
+ *      Author: Woojae Jang
+ *
+ *      All modified circular buffer code
+ */
+#include "msp.h"
+#include "msp432p401r.h"
+#include "adc_circbuf.h"
+#include "adc.h"
+#include "lab4.h"
+#include <stdint.h>
+#include <stdlib.h>
+
+// this should setup the buffer in the heap and initialize the structure variables
+CB_Status CB_initialize_buffer(CircBuf_t ** buf, uint32_t length) {
+    if(length > 60) length = 60;    //store 60 samples
+
+    (*buf)->base = (uint16_t *) malloc(length);
+    if(!(*buf)->base){
+        return CB_NULL;}
+    (*buf)->head = (*buf)->base;
+    (*buf)->tail = (*buf)->base;
+    (*buf)->length = length;
+    (*buf)->num_items = 0;
+    return CB_EMPTY;
+
+}
+
+// delete the buffer from dynamic memory allocation
+CB_Status CB_delete_buffer(CircBuf_t * buf){
+    CB_Status test = CB_clear_buffer(buf);
+    if(!test) return CB_NULL;
+    free(buf->buffer);
+    free(buf);
+    return CB_NO_ERROR;
+}
+
+// return a non-zero value if the buffer is full, a zero value if not full
+int8_t CB_buffer_full(CircBuf_t * buf) {
+    return (buf->num_items >= buf->length);     // num items will be larger if overwriting data
+}
+
+// return a zero value if the buffer is not empty, a non-zero value if empty
+    int8_t CB_buffer_empty(CircBuf_t * buf) {
+    return (buf->num_items == 0);
+}
+
+// this should set the contents of the buffer to zero and reset the buffer pointers to a clean state
+CB_Status CB_clear_buffer(CircBuf_t * buf) {
+    if(!buf || !buf->head || !buf->tail || !buf->base) {        //checking condition
+        return CB_NULL;
+    }
+    if(!(CB_buffer_empty(buf))){
+        while(buf->tail != buf->head){
+            *(buf->tail) = 0;
+            buf->tail++;
+        }
+        buf->head = buf->base;
+        buf->tail = buf->base;
+        buf->num_items = 0;
+    }
+    return CB_EMPTY;
+}
+
+// add a new item to the buffer and adjust the parameters in the structure
+CB_Status CB_add_item_to_buffer(CircBuf_t * buf, uint16_t item) {
+    if(!buf || !buf->head || !buf->tail || !buf->base) {        //checking condition
+            return CB_NULL;
+        }
+    if( (buf->buffer + (buf->length-1)) == buf->head){          //head wrap around
+        *(buf->head++) = item;
+        buf->head = buf->buffer;    // set the head to the base
+        if(CB_buffer_full(buf) != CB_FULL){
+            buf->num_items++;
+        }
+        return CB_NO_ERROR;
+    }
+    if( (buf->buffer + (buf->length-1)) == buf->tail){          //tail wrap around
+        buf->tail = buf->buffer;    // set the tail to the base
+        return CB_NO_ERROR;
+    }
+    if(buf->head == buf->tail && buf->num_items != 0){
+        *(buf->head++) = item;
+        buf->head++;
+        buf->tail++;
+    }
+    else{
+        *(buf->head) = item;
+        buf->head++;
+        if(CB_buffer_full(buf) != CB_FULL){
+            buf->num_items++;
+        }
+        return CB_NO_ERROR;
+    }
+    return CB_NO_ERROR;
+}
+
+// remove an item to the buffer and adjust the parameters in the structure
+uint8_t CB_remove_item_from_buffer(CircBuf_t * buf) {
+    if(!buf || !buf->base || !buf->head || !buf->tail)
+        return 0;
+    if(CB_buffer_empty(buf))
+        return 0;
+    uint8_t prev = *(buf->tail);
+    buf->tail++;
+    if((buf->base + buf->length) == buf->tail)
+        buf->tail = buf->base;
+    buf->num_items--;
+    return prev;
+}
+
+CB_Status CB_dump_buffer(CircBuf_t * buf){
+    if(!buf || !buf->base || !buf->head || !buf->tail)
+        return CB_NULL;
+    if(CB_buffer_empty(buf))
+        return CB_NULL;
+    if(CB_buffer_full(buf) != CB_FULL){
+        UART_send_n("..............................", 30);
+        UART_send_byte('\n');
+        UART_send_n("Printing Buffer...", 18);
+        UART_send_byte('\n');
+        UART_send_n("..............................", 30);
+        UART_send_byte('\n');
+        while(buf->tail != buf->head){
+            uint16_t temp = *buf->tail;
+            char str[7];
+            float conversion = ConvertToCelsius(temp);
+//add in more block to be able to see when buff is printed
+            UART_send_n("Celsius: ", 9);
+            ftoa(conversion, str, 3);
+            UART_send_n((uint8_t *) str, 6);
+            UART_send_byte('\n');
+//add in fahrenheit
+            buf->tail++;
+            buf->num_items--;
+        }
+        CB_clear_buffer(buf);
+        return CB_NO_ERROR;
+    }
+    if(CB_buffer_full(buf) == CB_FULL){
+        UART_send_n("..............................", 30);
+        UART_send_byte('\n');
+        UART_send_n("Printing Buffer...", 18);
+        UART_send_byte('\n');
+        UART_send_n("..............................", 30);
+        UART_send_byte('\n');
+        while(buf->num_items != 0){
+            uint16_t temp = *buf->tail;
+            char str[7];
+            float conversion = ConvertToCelsius(temp);
+//add in more block to be able to see when buff is printed
+            UART_send_n("Celsius: ", 9);
+            ftoa(conversion, str, 3);
+            UART_send_n((uint8_t *) str, 6);
+            UART_send_byte('\n');
+//add in fahrenheit
+            buf->tail++;
+            buf->num_items--;
+        }
+        CB_clear_buffer(buf);
+        return CB_NO_ERROR;
+    }
+    return CB_NO_ERROR;
+}
+
+void CB_print_item_from_buffer(CircBuf_t *buf) {
+    volatile uint16_t * ptail;
+    ptail = buf->tail;
+
+    while(ptail != buf->head) {
+        UART_send_byte(*ptail);
+        //characterizeChar(*ptail);
+        ptail++;
+        if(ptail == buf->base + buf->length){
+            ptail = buf->base;
+        }
+    }
+    UART_send_byte('\n');   //want to print once all other items have been done
+    printCharStats();
+    uint8_t characterize;   //else, prints vertically w/"Number of Items: " repeating each line
+    char str[4];
+    UART_send_n("Number of Items: ", 17);
+    characterize = itoa(buf->num_items, str, 3, 10);
+    UART_send_n((uint8_t *) str, characterize);
+    UART_send_byte('\n');
+    UART_send_byte('\n');
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*
+ * adc_circbuf.h
+ *
+ *  Created on: Oct 12, 2017
+ *      Author: Woojae Jang
+ *
+ *      All modified circular buffer code
+ */
+
+#ifndef ADC_CIRCBUF_H_
+#define ADC_CIRCBUF_H_
+
+
+typedef struct {
+    uint16_t * buffer;
+    volatile uint16_t * head;
+    volatile uint16_t * tail;
+    volatile uint16_t * base;
+    volatile uint32_t num_items;
+    volatile uint32_t length;
+}CircBuf_t;
+
+typedef enum{
+    CB_NO_ERROR = 0,
+    CB_FULL,
+    CB_NOT_FULL,
+    CB_EMPTY,
+    CB_NOT_EMPTY,
+    CB_NULL,
+}CB_Status;
+
+// place buffer into heap
+CB_Status CB_initialize_buffer(CircBuf_t ** buf, uint32_t length);
+
+// delete the buffer from dynamic memory allocation
+CB_Status CB_delete_buffer(CircBuf_t * buf);
+
+// True if buffer is full
+int8_t CB_buffer_full(CircBuf_t * buf);
+
+// True if buffer is empty
+int8_t CB_buffer_empty(CircBuf_t * buf);
+
+// reset pointers and clear data
+CB_Status CB_clear_buffer(CircBuf_t * buf);
+
+// increment num_items, head pointer, assigns data
+CB_Status CB_add_item_to_buffer(CircBuf_t * buf, uint16_t item);
+
+// returns item at tail, increment tail
+uint8_t CB_remove_item_from_buffer(CircBuf_t * buf);
+
+// prints the whole buffer and clears the whole buffer
+CB_Status CB_dump_buffer(CircBuf_t * buf);
+
+// don't think we need this
+void CB_print_item_from_buffer(CircBuf_t *buf);
+
+
+#endif /* ADC_CIRCBUF_H_ */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*
+ * Joystick.c
+ *
+ *  Created on: Oct 22, 2017
+ *      Author: Woojae Jang
+ */
+
+#include "msp.h"
+#include <math.h>
+#include <stdlib.h>
+#include <stdint.h>
+
+
+extern volatile uint16_t NADC[32];
+
+
+void GPIO_configure_(void){   //joystick
+    P4->SEL0 |= BIT4;
+    P4->SEL1 |= BIT4;
+    P6->SEL0 |= BIT0;
+    P6->SEL1 |= BIT0;
+}
+
+
+uint8_t quadrants(void) {
+    uint8_t quadrant =0;
+
+    if((NADC[1] > 15000) && (NADC[2] >8200)) {
+        quadrant =1;
+        return quadrant;
+    }
+    else if((NADC[1] < 15000) && (NADC[2] > 8200)) {
+        quadrant =2;
+        return quadrant;
+    }
+    else if((NADC[1] < 15000) && (NADC[2] < 8100)) {
+        quadrant =3;
+        return quadrant;
+    }
+    else if((NADC[1] > 15000) && (NADC[2] < 8100)) {
+        quadrant =4;
+        return quadrant;
+    }
+    else return 0;
+}
+
+void GPIO_configure__(void){    //accelerometer
+    P4->SEL0 |= (BIT0 | BIT2);
+    P4->SEL1 |= (BIT0 | BIT2);
+    P6->SEL0 |= BIT1;
+    P6->SEL1 |= BIT1;
+}
+
+
+uint8_t Accelerometer(void) {
+    uint8_t Polarity = 0;
+
+    // set as 8100 ish
+    if((NADC[3] < 9000) && (NADC[4] >7000)) {
+         Polarity =1;        //+x
+         return Polarity;
+     }
+    else if((NADC[3] < 9000) && (NADC[4] < 9000)) {
+        Polarity =2;
+        return Polarity;      //-x
+    }
+     else if((NADC[3] > 7000) && (NADC[4] < 9000)) {
+         Polarity =3;
+         return Polarity;      //+y
+         }
+     else if((NADC[3] > 7000) && (NADC[4] > 7000)) {
+        Polarity =4;
+        return Polarity;      //-y
+         }
+     else if(/*((NADC[3] <9000) && (NADC[3] >7000)) && ((NADC[4]) <9000 && (NADC[4]>7000)) &&*/(NADC[5] > 10000)) {
+         Polarity =5;
+         return Polarity;      //+z
+         }
+     else if(/*((NADC[3] <9000) && (NADC[3] >7000)) && ((NADC[4]) <9000 && (NADC[4]>7000)) &&*/(NADC[5] < 10000)) {
+         Polarity =6;
+         return Polarity;      //-z
+         }
+     else return 0;
+}
+
+
+
+
+
+
+
+
+
+
+
+/*
+ * Joystick.h
+ *
+ *  Created on: Oct 22, 2017
+ *      Author: Woojae Jang
+ */
+
+#ifndef JOYSTICK_H_
+#define JOYSTICK_H_
+
+void GPIO_configure_(void);
+
+uint8_t quadrants(void);
+
+void GPIO_configure__(void);
+
+uint8_t Accelerometer(void);
+
+#endif /* JOYSTICK_H_ */
+
+
