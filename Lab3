@@ -1,3 +1,16 @@
+Lab 3 : UART and Circular Buffers
+
+Overview : This lab will introduce you to the concepts of Universal Asynchronous Receive Transmit (UART)
+and the FIFO circular buffer data structure (Queue). 
+You will combine the serial device and the buffer with interrupts and digital IO to process data in and out of the microcontroller.
+You will transmit into and analyze a character sequence from a serial terminal.
+Then, you will use the serial connection to print logging and debug information to a serial terminal.
+
+
+
+
+
+
 /*
  * main.c
  *
