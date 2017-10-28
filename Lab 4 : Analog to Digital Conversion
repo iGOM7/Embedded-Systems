@@ -1,3 +1,14 @@
+
+Lab 4 : Analog to Digital Conversion
+
+Overview : This lab will introduce you to the concepts of Analog to Digital Conversion (ADC).
+We will utilize the MKII Booster Pack board to interact with the Joystick and the Accelerometer.
+We will process those analog sensors by converting them into digital representations and interpret the data.
+We will utilize previous lab software including interrupts, the UART and the circular buffer.
+You will use these items to collect analog samples and print logging and debug information to a serial terminal.
+Finally, you will take your eScooter and print direction, velocity and distance to the serial terminal.
+
+
 /**
  * main.c
  */
