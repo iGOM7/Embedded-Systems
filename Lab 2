@@ -1,0 +1,281 @@
+/*
+ * main.c
+ *
+ *  Created on: Sep 11, 2017
+ *      Author: Woojae Jang
+ */
+#include "msp.h"
+#include <stdint.h>
+
+
+void timer_a0_config(){
+    TIMER_A0->R = 0;         // Reset count
+    TIMER_A0->CTL = TIMER_A_CTL_MC__STOP | TIMER_A_CTL_TASSEL_2 | TIMER_A_CTL_ID_3 | TIMER_A_CTL_IE;       // SMCLK, Up mode
+    TIMER_A0->CCR[0] = 37747;    // Value to count to
+    //CCR[0] = 37747 and ID_3 get 5Hz
+    TIMER_A0->CCR[0] &= ~(CCIFG);
+    TIMER_A0->CCTL[0] = TIMER_A_CCTLN_CCIE;   // TACCR0 interrupt enabled
+/* Enable Interrupts in the NVIC */
+    NVIC_EnableIRQ(TA0_0_IRQn);
+}
+
+
+void GPIO_configure(void) {
+/* Data from Encoder */
+  P1->SEL0 &= ~(BIT6);
+  P1->SEL1 &= ~(BIT6);
+  P1->DIR &= ~(BIT6);
+  P1->REN &= ~BIT6;  //pullup enabled
+  //P1->OUT |= BIT6;  //clear output
+  P1->IFG = 0;   //interrupt flag cleared
+  P1->IES |= BIT6;  //flag set on high to low transition
+  P1->IE |= BIT6;   //bit interrupt enabled
+
+/* Button configure */
+  P1->SEL0 &= ~(BIT1 | BIT4 | BIT7);  // P1.0 to general IOmode
+  P1->SEL1 &= ~(BIT1 | BIT4 | BIT7);
+  P1->DIR &= ~(BIT1 | BIT4);  // P1.1 set as input direction
+  P1->DIR |= (BIT7);   //P1.7 pin set as output direction
+  P1->REN |= (BIT1 | BIT4);
+  P1->OUT |= (BIT0 | BIT7);  // P1.0 output low
+  P1->IFG &= ~(BIT1 | BIT4);
+  P1->IES |= (BIT1 | BIT4);   // flag is set on a high to low transition
+  P1->IE |= (BIT1 | BIT4);   // The interrupt is enable
+
+/*Left LED configure*/
+  P1->SEL0 &= ~(BIT0);
+  P1->SEL1 &= ~(BIT0);
+  P1->DIR |= BIT0;
+  P1->OUT &= ~(BIT0);
+
+/*Right LED configure*/
+  P2->SEL0 &= ~(BIT0 | BIT1 | BIT2);
+  P2->SEL1 &= ~(BIT0 | BIT1 | BIT2);
+  P2->DIR |= (BIT0 | BIT1 | BIT2);
+  P2->OUT &= ~(BIT0 | BIT1 | BIT2);
+
+/* Configure Latency Test Output Pin */
+  //P1->SEL0 = ???;
+  //P1->SEL1 = ???;
+
+/* Enable Interrupts in the NVIC */
+  NVIC_EnableIRQ(PORT1_IRQn);
+}
+
+volatile uint16_t sysclock;
+
+void main(void)
+{
+    WDT_A->CTL = WDT_A_CTL_PW | WDT_A_CTL_HOLD;     // stop watchdog timer
+    GPIO_configure();
+    timer_a0_config();
+    __enable_irq();
+
+    //SysTick->LOAD = 0x000FFFFF;
+    //SysTick->CTRL = BIT0| BIT2;
+
+    while(1);
+
+}
+
+
+
+
+
+
+
+
+
+
+
+/*
+ * port.c
+ *
+ *  Created on: Sep 11, 2017
+ *      Author: Woojae Jang
+ */
+#include "msp.h"
+#include "port.h"
+#include "core_cm4.h"
+#include <stdint.h>
+
+extern volatile uint32_t encoder =0;
+extern volatile int16_t sysclock;
+volatile float distance =0;
+volatile float pi = 3.14;
+volatile float diameter =0.09945; //meters
+volatile float rev=0;
+
+void PORT1_IRQHandler(void){
+    //sysclock -= SysTick->VAL;
+    int8_t flag1 = (P1->IFG & BIT1);
+    int8_t flag2 = (P1->IFG & BIT4);
+/*Left LED toggle*/
+/*    if(flag1){
+ *  syslock =Systick->VAL;
+        P1->OUT ^= BIT7;
+        P1->OUT ^= (BIT0);
+        P1->IFG &= ~(BIT1);
+        P1->OUT ^= BIT7;
+    }
+    if(flag2){
+        P1->OUT ^= BIT7;
+        P1->OUT ^= (BIT0);
+        P1->IFG &= ~(BIT4);
+        P1->OUT ^= BIT7;
+    }   */
+/*Right Rainbow LED toggle*/
+/*    int8_t counter = 0;
+    if(flag1){
+        P2->OUT++;
+        P1->IFG &= ~(BIT1);
+        if(counter >= 8){
+            counter = 0;
+        }
+    }
+    if(flag2){
+        P2->OUT--;
+        P1->IFG &= ~(BIT4);
+        if(counter < 0){
+            counter = 8;
+        }
+    }     */
+/*Timer Rainbow Blink 500ms*/
+ /*   if(flag1 | flag2){
+        TIMER_A0->CTL |= TIMER_A_CTL_MC__UP;    //turns timer on once flag is called
+        P1->IE &= ~(BIT1 | BIT4);
+        P1->IFG &= ~(BIT1 | BIT4);
+        TIMER_A0->R = 0;         // Reset count
+        TIMER_A0->CCTL[0] = TIMER_A_CCTLN_CCIE;   // TACCR0 interrupt enabled
+    }*/
+
+    if(P1->IFG & BIT6) {
+        sysclock = SysTick->VAL;
+        encoder++;
+        P1->OUT ^= BIT0;
+    }
+    P1->IFG &= 0;
+
+    distance = ((pi * diameter) /14) * encoder;
+    rev = (distance / (pi*diameter));
+
+/*    sysclock -=SysTick->VAL;
+    P1->IFG |= BIT1;
+    P1->IFG &= 0;
+    sysclock = SysTick->VAL;*/
+}
+
+
+
+
+
+
+
+
+
+/*
+ * port.h
+ *
+ *  Created on: Sep 14, 2017
+ *      Author: Woojae Jang
+ */
+#ifndef PORT_H_
+#define PORT_H_
+
+void PORT1_IRQHandler();
+
+#endif /* PORT_H_ */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*
+ * timer.c
+ *
+ *  Created on: Sep 16, 2017
+ *      Author: Woojae Jang
+ */
+#include "msp.h"
+
+volatile uint8_t counter = 0;
+
+void TA0_0_IRQHandler(){
+    /*LED1 blink */
+/*    if(TIMER_A0->CCTL[0] & TIMER_A_CCTLN_CCIFG){
+        P1->OUT ^= BIT0 | BIT7;
+        TIMER_A0->CCTL[0] &= ~(TIMER_A_CCTLN_CCIFG);
+    }
+*/
+    /*LED2 Rainbow blink*/
+    if(TIMER_A0->CCTL[0] & TIMER_A_CCTLN_CCIFG){
+        TIMER_A0->CCTL[0] &= ~(TIMER_A_CCTLN_CCIFG);
+        P2->OUT++;
+        counter++;
+
+        if(counter % 8 == 0){
+            P2->OUT &= ~(BIT0 | BIT1 | BIT2);
+            TIMER_A0->CCTL[0] &= ~(TIMER_A_CCTLN_CCIFG);
+            TIMER_A0->CCTL[0] &= ~(TIMER_A_CCTLN_CCIE);
+
+            P1->IE |= (BIT1 | BIT4);
+            P1->IFG &= ~(BIT1 | BIT4);
+
+        }
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*
+ * timer.h
+ *
+ *  Created on: Sep 16, 2017
+ *      Author: Woojae Jang
+ */
+#ifndef TIMER_H_
+#define TIMER_H_
+
+void TA0_0_IRQHandler();
+
+#endif /* TIMER_H_ */
+
+
+
+
+
+
+
+
+
+
+
+
