@@ -1,0 +1,804 @@
+/*
+ * main.c
+ *
+ *
+ */
+#include "msp.h"
+#include <string.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include "UART.h"
+#include "circbuf.h"
+#include "Lab3.h"
+
+CircBuf_t init;
+CircBuf_t * rxBuff = &init;
+
+CircBuf_t out;
+CircBuf_t * txBuff = &out;
+
+volatile uint8_t isEnterChar = 0;
+volatile uint8_t input;
+volatile uint8_t isRightButton = 0;
+volatile uint32_t Total;
+volatile uint32_t Alphabetic;
+volatile uint32_t Punctuation;
+volatile uint32_t Numerical;
+volatile uint32_t Whitespace;
+volatile uint32_t Other;
+volatile CB_Status status;
+
+
+void main(void)
+{
+    WDT_A->CTL = WDT_A_CTL_PW | WDT_A_CTL_HOLD;     // stop watchdog timer
+
+    P1->SEL0 &= ~BIT0;
+    P1->SEL0 &= ~BIT0;
+    P1->DIR |= BIT0;
+    P1->OUT |= BIT0;
+
+    UART_Configure();
+/*
+    while(1) {
+        //UART_send_byte(0xAA);
+        int8_t length = 17;
+        int8_t *data = "Why not Zoidberg?";
+        UART_send_n(data, length);
+    }
+*/
+/*                  Question 9 (a,b,c)
+//itoa\\\\\\\\\\\\\\\\\\\\
+    int a = 12458;
+    char s[6];
+    itoa(a,s);
+//atoi\\\\\\\\\\\\\\\\\\\\
+    char b[5] = "9734";
+    int t = atoi(b);
+//ftoa\\\\\\\\\\\\\\\\\\\\
+    float c = 324.12;
+    char u[7];
+    int afterpoint = 5;
+    ftoa(c, u, afterpoint);
+*/
+
+    status = CB_initialize_buffer(&rxBuff, 256);
+    status = CB_initialize_buffer(&txBuff, 256);
+    GPIO_configure();
+
+    __enable_irq();
+
+    while(1){
+        if(isEnterChar){
+            isEnterChar = 0;
+
+            while(!CB_buffer_empty(rxBuff)){
+                input = CB_remove_item_from_buffer(rxBuff);
+                characterizeChar(input);
+                UART_send_byte(input);
+                CB_add_item_to_buffer(txBuff, input);
+            }
+
+            status = CB_EMPTY;
+            rxBuff->head = rxBuff->base; // reset buffer
+            rxBuff->tail = rxBuff->base;
+            printCharStats();
+
+            EUSCI_A0->IE |= EUSCI_A_IE_RXIE;    //enable receive interrupts
+        }
+
+        if(isRightButton){
+            isRightButton = 0;
+            CB_print_item_from_buffer(txBuff);
+
+            EUSCI_A0->IE |= EUSCI_A_IE_RXIE;    //enable receive interrupts
+        }
+
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*
+ * circbuf.c
+ *
+ *  Created on: Sep 26, 2017
+ *      Author: Woojae Jang
+ */
+#include "msp.h"
+#include <circbuf.h>
+#include "circbuf.h"
+#include "UART.h"
+#include "Lab3.h"
+#include <stdint.h>
+#include <stdlib.h>
+
+
+
+//this should setup the buffer in the heap and initialize the structure variables
+CB_Status CB_initialize_buffer(CircBuf_t ** buf, uint32_t length) {
+    if(length > 256) length = 256;
+
+    (*buf)->base = (uint8_t *) malloc(length);
+    if(!(*buf)->base){
+        return CB_NULL;}
+    (*buf)->head = (*buf)->base;
+    (*buf)->tail = (*buf)->base;
+    (*buf)->length = length;
+    (*buf)->num_items = 0;
+    return CB_EMPTY;
+
+}
+
+//delete the buffer from dynamic memory allocation
+CB_Status CB_delete_buffer(CircBuf_t * buf){
+    CB_Status test = CB_clear_buffer(buf);
+    if(!test) return CB_NULL;
+    free(buf->buffer);
+    free(buf);
+    return CB_NO_ERROR;
+}
+
+//return a non-zero value if the buffer is full, a zero value if not full
+int8_t CB_buffer_full(CircBuf_t * buf) {
+    return (buf->num_items == buf->length);
+}
+
+//return a zero value if the buffer is not empty, a non-zero value if empty
+int8_t CB_buffer_empty(CircBuf_t * buf) {
+    return (buf->num_items == 0);
+}
+
+//this should set the contents of the buffer to zero and reset the buffer pointers to a clean state
+CB_Status CB_clear_buffer(CircBuf_t * buf) {
+    if(!buf || !buf->head || !buf->tail || !buf->base) {        //checking condition
+        return CB_NULL;
+    }
+    if(!(CB_buffer_empty(buf))){
+        while(buf->tail != buf->head){
+            *(buf->tail) = 0;
+            buf->tail++;
+        }
+        buf->head = buf->base;
+        buf->tail = buf->base;
+        buf->num_items = 0;
+    }
+    return CB_EMPTY;
+}
+
+//add a new item to the buffer and adjust the parameters in the structure
+CB_Status CB_add_item_to_buffer(CircBuf_t * buf, uint8_t item) {
+    if(!buf || !buf->head || !buf->tail || !buf->base) {        //checking condition
+            return CB_NULL;
+        }
+
+    if(CB_buffer_full(buf) == CB_FULL) {                  //checking if its full
+        return CB_FULL;
+    }
+
+    *(buf->head++) = item;
+    if((buf->base + buf->length) == buf->head){
+        buf->head = buf->base;
+    }
+    (buf->num_items)++;
+    return CB_NOT_EMPTY;
+}
+
+//remove an item to the buffer and adjust the parameters in the structure
+uint8_t CB_remove_item_from_buffer(CircBuf_t * buf) {
+    if(!buf || !buf->base || !buf->head || !buf->tail)
+        return 0;
+    if(CB_buffer_empty(buf))
+        return 0;
+    uint8_t prev = *(buf->tail);
+    buf->tail++;
+    if((buf->base + buf->length) == buf->tail)
+        buf->tail = buf->base;
+    buf->num_items--;
+    return prev;
+}
+
+/*
+CB_Status CB_peek_buffer(CircBuf_t * buf) {
+    if(!buf || !buf->head || !buf->tail || !buf->base) {
+        return CB_NULL;
+    }
+
+    if(CB_buffer_empty(buf) == CB_EMPTY) {
+        return CB_EMPTY;
+    }
+    int i = 0;
+    for(i; i<= buf->num_items; i++){
+        uint8_t temp = buf->tail;
+
+        if(buf->tail == buf->base + (buf->length -1)) {
+            buf->tail = buf->base;
+        }
+        else {
+            buf->tail++;
+        }
+    }
+    return CB_NO_ERROR;
+}
+*/
+void CB_print_item_from_buffer(CircBuf_t *buf) {
+
+    volatile uint8_t * ptail;
+    ptail = buf->tail;
+
+    while(ptail != buf->head) {
+        UART_send_byte(*ptail);
+        characterizeChar(*ptail);
+        ptail++;
+        if(ptail == buf->base + buf->length){
+            ptail = buf->base;
+        }
+    }
+    UART_send_byte('\n');   //want to print once all other items have been done
+    uint8_t characterize;   //else, prints vertically w/"Number of Items: " repeating each line
+    char str[4];
+    UART_send_n("Number of Items: ", 17);
+    characterize = itoa(buf->num_items, str, 3, 10);
+    UART_send_n((uint8_t *) str, characterize);
+    UART_send_byte('\n');
+    UART_send_byte('\n');
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*
+ * circbuf.h
+ *
+ *  Created on: Sep 26, 2017
+ *      Author: Woojae Jang
+ */
+
+#ifndef CIRCBUF_H_
+#define CIRCBUF_H_
+
+typedef struct {
+    uint8_t * buffer;
+    volatile uint8_t * head;
+    volatile uint8_t * tail;
+    volatile uint8_t * base;
+    volatile uint32_t num_items;
+    volatile uint32_t length;
+}CircBuf_t;
+
+typedef enum{
+    CB_NO_ERROR = 0,
+    CB_FULL,
+    CB_NOT_FULL,
+    CB_EMPTY,
+    CB_NOT_EMPTY,
+    CB_NULL,
+}CB_Status;
+
+//place buffer into heap
+CB_Status CB_initialize_buffer(CircBuf_t ** buf, uint32_t length);
+
+
+CB_Status CB_delete_buffer(CircBuf_t * buf);
+
+//True if buffer is full
+int8_t CB_buffer_full(CircBuf_t * buf);
+
+//True if buffer is empty
+int8_t CB_buffer_empty(CircBuf_t * buf);
+
+//reset pointers and clear data
+CB_Status CB_clear_buffer(CircBuf_t * buf);
+
+//increment num_items, head pointer, assigns data
+CB_Status CB_add_item_to_buffer(CircBuf_t * buf, uint8_t item);
+
+//returns item at tail, increment tail
+uint8_t CB_remove_item_from_buffer(CircBuf_t * buf);
+
+CB_Status CB_peek_buffer(CircBuf_t * buf);
+
+void CB_print_item_from_buffer(CircBuf_t *buf);
+
+
+
+#endif /* CIRCBUF_H_ */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*
+ * Lab3.c
+ *
+ *  Created on: Oct 8, 2017
+ *      Author: Woojae Jang
+ */
+
+#include <stdlib.h>
+#include <string.h>
+#include "msp.h"
+#include "Lab3.h"
+#include <math.h>
+#include <stdio.h>
+#include "UART.h"
+#include "circbuf.h"
+
+extern CircBuf_t * rxBuff;
+extern CircBuf_t * txBuff;
+
+extern volatile uint8_t Alphabetic;
+extern volatile uint8_t Punctuation;
+extern volatile uint8_t Numerical;
+extern volatile uint8_t Whitespace;
+extern volatile uint8_t Other;
+extern volatile uint8_t isRightButton;
+extern volatile CB_Status status;
+#define ASCII_ZERO 48
+
+
+//converts int to string
+/*void itoa(int n, char s[]) {
+    int i, sign;
+
+    if((sign = n) <0){
+        n = -n;
+    }
+    i=0;
+    do{
+        s[i++] = n %10 +'0';
+    } while((n /= 10) >0);
+    if(sign <0){
+        s[i++] = '-';
+    }
+    s[i] ='\0';
+    reverseitoa(s);
+}
+*/
+
+uint8_t itoa(uint32_t num, char * str, uint8_t length, uint8_t base) {
+    *(str+length) = (num % base) + ASCII_ZERO;//48 is "0" is ASCII
+    *(str + length+1) = '\0';    //terminate string
+    int i, j;
+    for(i = length-1; i >= 0; i--)
+    {
+        num = num / base;
+        if (num == 0) {    //shift string
+                for (j = i+1; *(str+j) != '\0'; j++){
+                    *(str + (j-i-1)) = *(str + j);
+                }
+                *(str+j) = '\0';  //terminate new string
+                return (length-i);
+        }
+        *(str+ i) = (num % base) + ASCII_ZERO;
+    }
+    return  (length-i);
+}
+
+
+/* reverse:  reverse string s in place */
+/*void reverseitoa(char s[])
+{
+    int i, j;
+    char c;
+
+    for (i = 0, j = strlen(s)-1; i<j; i++, j--) {
+        c = s[i];
+        s[i] = s[j];
+        s[j] = c;
+    }
+}
+*/
+
+//converts string to int
+int Atoi(char *str)
+{
+    int res = 0;        // Initialize result
+    int sign = 1;       // Initialize sign as positive
+    int i = 0;          // Initialize index of first digit
+
+    if (str[0] == '-')
+    {
+        sign = -1;
+        i++;            // Also update index of first digit
+    }
+
+    for (; str[i] != '\0'; ++i)
+    {
+        res = res*10 + str[i] - '0';
+    }
+
+    return sign*res;
+}
+
+void reverseftoa(char *str, int len)
+{
+    int i=0, j=len-1, temp;
+    while (i<j)
+    {
+        temp = str[i];
+        str[i] = str[j];
+        str[j] = temp;
+        i++; j--;
+    }
+}
+
+//converts given int to string str[]
+uint8_t intToStr(uint32_t x, char *str, uint8_t d){
+    uint8_t i = 0;
+    while(x){
+        str[i++] = (x%10) + '0';
+        x = x/10;
+
+    }
+    while(i < d){
+        str[i++] = '0';
+    }
+    reverseftoa(str,i);
+    str[i] = '\0';
+    return i;
+}
+
+// Converts a floating point number to string.
+void ftoa(float n, char *res, int afterpoint)
+{
+    // Extract integer part
+    int ipart = (int)n;
+
+    // Extract floating part
+    float fpart = n - (float)ipart;
+
+    // convert integer part to string
+    int i = intToStr(ipart, res, 0);
+
+    // check for display option after point
+    if (afterpoint != 0)
+    {
+        res[i] = '.';  // add dot
+
+        // Get the value of fraction part upto given no.
+        // of points after dot. The third parameter is needed
+        // to handle cases like 233.007
+        fpart = fpart * pow(10, afterpoint);
+
+        intToStr((int)fpart, res + i + 1, afterpoint);
+    }
+}
+
+void characterizeChar(uint8_t data){
+    if( (data >= 'A' && data <= 'Z') || (data >= 'a' && data <= 'z') ){
+        Alphabetic++;}// A-Z and a-z
+    else if( (data == '!') || (data == 0x22) || (data == 0x27) || (data == ',') || (data == '.') || (data == ':') || (data == ';') || (data == '?') ){
+        Punctuation++;}// ! " ' , . : ; ?
+    else if( (data >= '0') & (data <= '9') ){
+        Numerical++;}// 0 1 2 3 4 5 6 7 8 9
+    else if( (data == 0x09)  || (data == 0x20) ){
+        Whitespace++;}//horizontal tab, space,
+    else if( (data == 0x0D) || (data == 0x0A) ); //this is the enter char, don't allow it to affect the rest
+    else{
+        Other++;}
+}
+
+void printCharStats(void){
+    //uint8_t characterize;
+    uint8_t result;
+    char str[4];
+
+    UART_send_n("\n", 1);
+
+    UART_send_n("Alphabetic: ", 12);
+    result = itoa(Alphabetic, str, 3, 10);
+    UART_send_n((uint8_t *) str, result);
+    UART_send_byte('\n');
+
+    UART_send_n("Punctuation: ", 13);
+    result = itoa(Punctuation, str, 3, 10);
+    UART_send_n((uint8_t *) str, result);
+    UART_send_byte('\n');
+
+    UART_send_n("Numerical: ", 11);
+    result = itoa(Numerical, str, 3, 10);
+    UART_send_n((uint8_t *) str, result);
+    UART_send_byte('\n');
+
+    UART_send_n("Whitespace: ", 12);
+    result = itoa(Whitespace, str, 3, 10);
+    UART_send_n((uint8_t *) str, result);
+    UART_send_byte('\n');
+
+    UART_send_n("Other: ", 7);
+    result = itoa(Other, str, 3, 10);
+    UART_send_n((uint8_t *) str, result);
+    UART_send_byte('\n');
+    UART_send_byte('\n');
+}
+
+void GPIO_configure(void) {
+
+  P1->SEL0 &= ~(BIT1 | BIT4 | BIT7);  // P1.0 to general IOmode
+  P1->SEL1 &= ~(BIT1 | BIT4 | BIT7);
+  P1->DIR &= ~(BIT1 | BIT4);  // P1.1 set as input direction
+  P1->DIR |= (BIT7);   //P1.7 pin set as output direction
+  P1->REN |= (BIT1 | BIT4);
+  P1->OUT |= (BIT1 | BIT4);
+  P1->OUT |= (BIT0 | BIT7);  // P1.0 output low
+  P1->IFG = 0;
+  P1->IES |= (BIT1 | BIT4);   // flag is set on a high to low transition
+  P1->IE |= (BIT1 | BIT4);   // The interrupt is enable
+
+  NVIC_EnableIRQ(PORT1_IRQn);
+}
+
+void PORT1_IRQHandler(void) {
+    if(P1->IFG & BIT4) {          //right
+        EUSCI_A0->IE &= ~EUSCI_A_IE_RXIE;
+        isRightButton = 1;
+    }
+    if(P1->IFG & BIT1) {          //left
+        UART_send_n("Buffer Cleared\n\n", 16);
+        status = CB_clear_buffer(rxBuff);
+        status = CB_clear_buffer(txBuff);
+
+        Alphabetic = 0; //reset values
+        Punctuation = 0;
+        Numerical = 0;
+        Whitespace = 0;
+        Other = 0;
+    }
+    P1->IFG = 0;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*
+ * Lab3.h
+ *
+ *  Created on: Sep 26, 2017
+ *      Author: Woojae Jang
+ */
+
+#ifndef LAB3_H_
+#define LAB3_H_
+
+#include <stdint.h>
+#include "circbuf.h"
+
+
+//void itoa(int n, char s[]);
+
+//void reverseitoa(char s[]);
+
+uint8_t itoa(uint32_t num, char * str, uint8_t length, uint8_t base);
+
+int Atoi(char *str);
+
+void reverseftoa(char * str, int len);
+
+uint8_t intToStr(uint32_t x, char str[], uint8_t d);
+
+void ftoa(float n, char *res, int afterpoint);
+
+void characterizeChar(uint8_t data);
+
+void printCharStats(void);
+
+void GPIO_configure(void);
+
+void PORT1_IRQHandler(void);
+
+void CB_print_item_from_buffer(CircBuf_t *buf);
+
+#endif /* LAB3_H_ */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*
+ * UART.c
+ *
+ *  Created on: Sep 26, 2017
+ *      Author: Woojae Jang
+ */
+#include "msp.h"
+#include "UART.h"
+#include "circbuf.h"
+
+extern CircBuf_t * rxBuff;
+extern volatile CB_Status status;
+extern volatile uint8_t isEnterChar;
+
+
+void EUSCIA0_IRQHandler() {
+    if(EUSCI_A0->IFG & EUSCI_A_IFG_RXIFG){  //handles RX interrupts
+        //CB_add_item_to_buffer(rxBuff, EUSCI_A0->RXBUF);   //echo
+        //EUSCI_A0->TXBUF = EUSCI_A0->RXBUF;    //echo
+        if(EUSCI_A0->RXBUF == 0x0A || status == CB_FULL){
+            EUSCI_A0->IE &= ~EUSCI_A_IE_RXIE;   //turn off receive interrupts
+            isEnterChar = 1;
+        }
+        else{
+            status = CB_add_item_to_buffer(rxBuff, EUSCI_A0->RXBUF);
+        }
+        P1->OUT ^= BIT0;    //led test
+        //EUSCI_A0->TXBUF = EUSCI_A0->RXBUF;  //echo
+    }
+    EUSCI_A0->IFG = 0;
+}
+
+void UART_Configure(){
+    P1SEL0 |= (BIT2 | BIT3);                //TX & Rx Primary mode
+    P1SEL1 &= ~(BIT2 | BIT3);
+
+
+// Select Frame parameters and clock source
+    EUSCI_A0->CTLW0 |= EUSCI_A_CTLW0_SWRST;                   // Put eUSCI in reset
+    EUSCI_A0->CTLW0 &= ~EUSCI_A_CTLW0_PEN;       //parity disabled
+    EUSCI_A0->CTLW0 &= ~EUSCI_A_CTLW0_MODE_3;     // set to uart mode
+    EUSCI_A0->CTLW0 &= ~EUSCI_A_CTLW0_MSB;       //LSB first
+    EUSCI_A0->CTLW0 &= ~EUSCI_A_CTLW0_SEVENBIT;  //8 bit character length
+    EUSCI_A0->CTLW0 &= ~EUSCI_A_CTLW0_SPB;       //one stop bit one start bit is default
+    EUSCI_A0->CTLW0 |= EUSCI_A_CTLW0_SSEL__SMCLK;
+    config_baud(BAUD9600);
+
+    EUSCI_A0->CTLW0 &= ~EUSCI_A_CTLW0_SWRST;      // Initialize eUSCI
+
+    EUSCI_A0->IE |= EUSCI_A_IE_RXIE;
+    EUSCI_A0->IE |= EUSCI_A_IE_TXIE;
+
+    NVIC_EnableIRQ(EUSCIA0_IRQn);
+}
+
+void config_baud(BAUD baud){
+    if(baud == BAUD9600){
+        EUSCI_A0->BRW = 19;
+        EUSCI_A0->MCTLW |= EUSCI_A_MCTLW_OS16;
+        EUSCI_A0->MCTLW |= (0xAA << EUSCI_A_MCTLW_BRS_OFS);
+        EUSCI_A0->MCTLW |= (8 << EUSCI_A_MCTLW_BRF_OFS);
+    }
+}
+
+
+void UART_send_byte(uint8_t data) {
+    while(EUSCI_A0->STATW & EUSCI_A_STATW_BUSY);
+    EUSCI_A0->TXBUF = data;
+}
+
+void UART_send_n(uint8_t * data, uint32_t length) {
+    uint32_t i;
+    for (i = 0; i< length; i++) {
+        UART_send_byte(data[i]);
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*
+ * UART.h
+ *
+ *  Created on: Sep 26, 2017
+ *      Author: Woojae Jang
+ */
+
+#ifndef UART_H_
+#define UART_H_
+#include <stdint.h>
+
+typedef enum BAUD_t{
+    BAUD9600,
+    //BAUD57600,
+    //BAUD115200,
+}BAUD;
+
+void config_baud(BAUD baud);
+
+void UART_Configure();
+
+void EUSCIA0_IRQHandler();
+
+void UART_send_byte(uint8_t data);
+
+void UART_send_n(uint8_t * data, uint32_t length);
+
+
+#endif /* UART_H_ */
