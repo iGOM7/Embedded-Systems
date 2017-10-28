@@ -1,3 +1,17 @@
+Lab 2 : Interrupts and Timing Systems
+
+Overview : This lab will introduce students to the concepts of interrupts and timers. 
+You will investigate two different types of interrupts, general I/O, and timers.
+In the first part, you will use buttons to change between different output states of an RGB LED.
+In the second part, you will use timers to perform create timed events.
+The lab will finish with building a real world sensor that combines both buttons, timers, 
+and IR LEDs to calculate rotational displacement of a wheel.
+
+
+
+
+
+
 /*
  * main.c
  *
