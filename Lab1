@@ -1,6 +1,10 @@
-# Embedded-Systems
+Lab 1 : Introduction to Embedded Systems and Tools
 
-# Embedded-Systems
+Overview : This lab will introduce students to the MSP432 LaunchPad. 
+Students will learn various capabilities regarding programming and debugging their devices. 
+A basic blinking LED program will be the subject of this lab in addition to the showing of some of C-Programming concepts
+
+
 
 
 #include "msp.h"
